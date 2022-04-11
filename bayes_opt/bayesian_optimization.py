@@ -3,11 +3,12 @@ import warnings
 from .target_space import TargetSpace
 from .event import Events, DEFAULT_EVENTS
 from .logger import _get_default_logger
-from .util import UtilityFunction, acq_max, ensure_rng
+from .util import UtilityFunction, acq_max, ensure_rng, acq_max_terminal
 
 from sklearn.gaussian_process.kernels import Matern
 from sklearn.gaussian_process import GaussianProcessRegressor
 
+import sys
 
 class Queue:
     def __init__(self):
@@ -189,6 +190,29 @@ class BayesianOptimization(Observable):
 
         return self._space.array_to_params(suggestion)
 
+    ###andrbale### add return of acquisition function
+    def suggest_terminal(self, utility_function):
+        """Most promising point to probe next"""
+        if len(self._space) == 0:
+            return self._space.array_to_params(self._space.random_sample())
+
+        # Sklearn's GP throws a large number of warnings at times, but
+        # we don't really need to see them here.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            self._gp.fit(self._space.params, self._space.target)
+
+        # Finding argmax of the acquisition function.
+        suggestion, acq_value= acq_max_terminal(
+            ac=utility_function.utility,
+            gp=self._gp,
+            y_max=self._space.target.max(),
+            bounds=self._space.bounds,
+            random_state=self._random_state
+        )
+
+        return self._space.array_to_params(suggestion), acq_value  
+
     def _prime_queue(self, init_points):
         """Make sure there's something in the queue at the very beginning."""
         if self._queue.empty and self._space.empty:
@@ -290,3 +314,90 @@ class BayesianOptimization(Observable):
     def set_gp_params(self, **params):
         """Set parameters to the internal Gaussian Process Regressor"""
         self._gp.set_params(**params)
+
+    ###andrbale### add terminal condition using acquisition function
+    def maximize_terminal(self,
+                 init_points=5,
+                 n_iter=25,
+                 acq='ucb',
+                 kappa=2.576,
+                 kappa_decay=1,
+                 kappa_decay_delay=0,
+                 xi=0.0,
+                 terminal_condition=0.0001,
+                 **gp_params):
+        """
+        Probes the target space to find the parameters that yield the maximum
+        value for the given function.
+
+        Parameters
+        ----------
+        init_points : int, optional(default=5)
+            Number of iterations before the explorations starts the exploration
+            for the maximum.
+
+        n_iter: int, optional(default=25)
+            Number of iterations where the method attempts to find the maximum
+            value.
+
+        acq: {'ucb', 'ei', 'poi'}
+            The acquisition method used.
+                * 'ucb' stands for the Upper Confidence Bounds method
+                * 'ei' is the Expected Improvement method
+                * 'poi' is the Probability Of Improvement criterion.
+
+        kappa: float, optional(default=2.576)
+            Parameter to indicate how closed are the next parameters sampled.
+                Higher value = favors spaces that are least explored.
+                Lower value = favors spaces where the regression function is the
+                highest.
+
+        kappa_decay: float, optional(default=1)
+            `kappa` is multiplied by this factor every iteration.
+
+        kappa_decay_delay: int, optional(default=0)
+            Number of iterations that must have passed before applying the decay
+            to `kappa`.
+
+        xi: float, optional(default=0.0)
+            [unused]
+        """
+        self._prime_subscriptions()
+        self.dispatch(Events.OPTIMIZATION_START)
+        self._prime_queue(init_points)
+        self.set_gp_params(**gp_params)
+
+        util = UtilityFunction(kind=acq,
+                               kappa=kappa,
+                               xi=xi,
+                               kappa_decay=kappa_decay,
+                               kappa_decay_delay=kappa_decay_delay)
+        iteration = 0
+        terminate=False
+        while (not self._queue.empty or iteration < n_iter) and not terminate:
+            try:
+                x_probe = next(self._queue)
+            except StopIteration:
+                util.update_params()
+                x_probe, acq_value = self.suggest_terminal(util)
+
+
+                try:
+                    with open('/home/oem2/student_project/legged_gym/opt_logs/ei_values.txt', 'a') as f:
+                            f.write(f"{acq_value} ")
+                            f.close()
+                except FileNotFoundError:
+                        print("The 'docs' directory does not exist")                
+
+
+                if acq_value < terminal_condition:
+                    terminate=True
+                iteration += 1
+
+            self.probe(x_probe, lazy=False)
+
+            if self._bounds_transformer:
+                self.set_bounds(
+                    self._bounds_transformer.transform(self._space))
+
+        self.dispatch(Events.OPTIMIZATION_END)
