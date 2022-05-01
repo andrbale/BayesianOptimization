@@ -324,6 +324,7 @@ class BayesianOptimization(Observable):
                  kappa_decay=1,
                  kappa_decay_delay=0,
                  xi=0.0,
+                 use_terminal_condition=False,
                  terminal_condition=0.0001,
                  **gp_params):
         """
@@ -390,7 +391,7 @@ class BayesianOptimization(Observable):
                         print("The 'docs' directory does not exist")                
 
 
-                if acq_value < terminal_condition:
+                if acq_value < terminal_condition and use_terminal_condition==True:
                     terminate=True
                 iteration += 1
 
